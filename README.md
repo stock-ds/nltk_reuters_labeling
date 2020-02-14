@@ -1,14 +1,16 @@
-Creating a model to predict NLTK Reuters 
-news dataset's labels.
+# NLTK Reuters Labeling
 
-Full scipt in `neural_netrowk.py`
+Trying neural networks for NLTK Reuters news dataset's label predictions.
+
+Full main script in `neural_netrowk.py`
+
+Some additional code snippets and different, worse ANN approaches in `discarded.py`
 
 ## Text processing pipeline
 
-First, data is loaded into a dataframe for 
-easier processing. 
+First, data is loaded into a dataframe for easier processing. 
 
-```
+```python
 reviews = []
 for fileid in reuters.fileids():
     entry_type, filename = fileid.split("/")
@@ -16,32 +18,39 @@ for fileid in reuters.fileids():
         (filename, reuters.categories(fileid), entry_type, reuters.raw(fileid))
     )
 df = pd.DataFrame(reviews, columns=["filename", "categories", "type", "text"])
-df.head()
 ```
 
-Text is pre-processed by
-removing itallic tags '&lt;' to have only actual text. 
+Text is pre-processed by removing itallic tags `&lt;` to have only actual text.
 
-```
+```python
 df["text"] = df["text"].apply(lambda x: re.sub("&.{1,20}>", "", x))
 ```
 
+Also, all words were lowercased, symbols replaced by spaces, `.` removed.
+
+```python
+# make basic pre-processed text column:
+df["reduced_text"] = df["text"].apply(lambda x: re.sub(r"""[\d\n!@#$%^&*()_\-=+/,<>?;:'"[\]{}`~]""", " ", x.lower()))
+df["reduced_text"] = df["reduced_text"].apply(lambda x: re.sub("\.", "", x.lower()))
+```
+
 Text is split into train / test data sets following the
-original NLTK split. Train data set is also split into 
+original NLTK split. Train data set is further split into 
 train/validation data where necessary.
 
 ## Linear Bag Of Words Model
 
 First, we set the most basic sklearn multi label model
-based on SGDClassifier as a base line to beat. It gives f1_score 81.9%
+based on SGDClassifier as a base line to beat using a neural network. 
+It was trained in seconds and gives micro f1 score of 82.5%.
 
-```
+```python
 df["reduced_text"] = df["text"].apply(lambda x: re.sub("""[\d!@#$%^&*()_\-=+/*+.,<>,./?;:'"[\]{}`~]""", " ", x.lower()))
+
 lin_cv = CountVectorizer(min_df=10, max_df=0.9)
 X_bow = lin_cv.fit_transform(df["reduced_text"])
 
 Xl_train, Xl_test, y_train, y_test = get_data_splits(X_bow, y)
-
 bm = MultiOutputClassifier(SGDClassifier())
 yd = np.array(y_train.todense()) * 1
 bm.fit(Xl_train, yd)
@@ -53,126 +62,125 @@ print("Linear score", score_lin)  # 81.9%
 print_confusion_matrix_sample(y_test, Xl_pred, 0)
 ```
 
-## Dense Neural Network Bag Of Words Model
+## Dense Neural Network
 
-Now let's try a basic 1-hidden-layer dense neural network model.
-Most of hyperparameters will be default, but let's try tuning the number of 
-neurons in hidden layer, will try `[10, 50, 300, 1000]`. Also, to increase
-model's reliability when tuning hyprparameters, we will
-use 3-fold cross validation for each of the tested layer size:
+Dense neural network being one of the most basic ANN models, let's see if it can perform
+better than a traditional basic machine learning approach - a linear model.
 
-```
+Just as with the linear model, let's use the same data and some default parameters.
+The model is:
+`Input - Dense(1000) - Dropout(0.5) - Dense(800) - Dropout(0.5) - output Dense(90)`
+
+There are 2 layers and dropouts to decrease overfitting. 1000 and 800 layers are just low 
+numbers between input dimensions and output. The problem is likely not difficult enough
+to need more layers or neurons.
+
+```python
 X_train, X_test, y_train, y_test = get_data_splits(X_bow, y)
-
-hyperparams = [10, 50, 300, 1000]
-score_nn_bow = [0] * 1
-for n, hp in enumerate(hyperparams):
-    print("\nHyperparam", hp)
-    model = nn_2_dense(hp)
-    scores_ = run_cv(model, cv_num=3)
-
-    score_nn_bow[n] = np.average(scores_)
-    print("Average f1 score", score_nn_bow[n])
-    # print_confusion_matrix_sample(y_valid, Xnn_bow_pred>0.5, 1)
-
-best_idx = [n for n, i in enumerate(score_nn_bow == max(score_nn_bow)) if i == True][0]
-print("\nBest f1 score", score_nn_bow[best_idx])
+model = nn_dense((1000, 0.5, 800, 0.5), X_train.shape[1], y_train.shape[1])
+model.fit(X_train, y_train, batch_size=500, epochs=64, verbose=True)
+y_basicnn_pred = model.predict(X_test)
+bestscore_basic = f1_score(y_test, y_basicnn_pred > 0.5, average="micro")
+print("Linear score", score_lin)  # 82.5%
+print("NN basic score", bestscore_basic)  # 87.1%
 ```
 
-Using the best model, predict the test set to get the final accuracy. 
-Most accurate model turned out to be 1000-neuron model in this case.
+This gives accuracy of 87.1%.
 
-```
-print("Using  best model for test set prediction")
-model = nn_2_dense(hyperparams[best_idx])(X_train, y_train)
-model.fit(X_train, y_train, batch_size=100, epochs=10, verbose=True)
+## Dense Neural Network feature engineering and optimization
 
-y_pred = model.predict(X_test)
-best_score = f1_score(y_test, y_pred > 0.5, average="micro")
-print("NN score", best_score)
-```
+Let's see if adding additional additional features and optimizing the network architecture
+will increase the final model accuracy.
 
-This gives accuracy of 86.1%, which is 4.2% increase over linear model.
-
-## Dense Neural Network Bag Of Words Model with added features
-
-Let's see if adding additional manual features will increase the final model accuracy.
-Will be the best model architecture from previous section.
+Text pre-processing:
+* remove symbols
+* special case for , . ' so numbers and abbreviations don't get split
+* remove stopwords
+* remove excess spaces
+* replace all numbers with
+* lemmatization
 
 Features added:
-Count of spaces
-Count of capital letters
-Count of non-capital letters
-Count of digits
-Count of special symbols
+* Count of spaces
+* Count of capital letters
+* Count of non-capital letters
+* Count of digits
+* Count of special symbols
 
-```
-X_bow_fe = sparse.csr_matrix(
-    sparse.hstack(
-        [
-            X_bow,
-            df["text"].apply(lambda x: x.count(" "))[:, None],
-            df["text"].apply(lambda x: len(re.findall(r"[A-Z]", x)))[:, None],
-            df["text"].apply(lambda x: len(re.findall(r"[a-z]", x)))[:, None],
-            df["text"].apply(lambda x: len(re.findall(r"[0-9]", x)))[:, None],
-            df["text"].apply(
-                lambda x: len(re.findall("""[\d!@#$%^&*()_\-=+/.,<>?;:'"[\]{}`~]""", x))
-            )[:, None],
-        ]
-    )
-)
-X_train, X_test, y_train, y_test = get_data_splits(X_bow_fe, y)
-model = nn_2_dense(hyperparams[best_idx])(X_train, y_train)
-model.fit(X_train, y_train, batch_size=100, epochs=10, verbose=True)
+```python
+df = create_bag_ofwords(df)
+
+# Optimize
+_, _, _, _, X_tr, X_valid, y_tr, y_valid = prep_data(df["reduced_text_nn"], valid_size=0.15)
+score_nn_bow, nn_ar = optimize_nn(X_tr, X_valid, y_tr, y_valid)
+
+# Run best model
+print("Using best model for test set prediction")
+best = (1031, 0.26008782458319696, 795, 0.06356556954588621, 1412, 0.24505221956319218)  # @epoch 64
+
+_, X_test, _, y_test, X_tr, _, y_tr, _ = prep_data(df["reduced_text_nn"], valid_size=0.001)
+model = nn_dense(best, X_tr.shape[1], y_tr.shape[1])
+model.summary()
+model.fit(X_tr, y_tr, batch_size=500, epochs=64, verbose=True)  # class_weightdoes not increase final accuracy
 y_pred = model.predict(X_test)
-best_score = f1_score(y_test, y_pred > 0.5, average="micro")
-```
+bestscore_ = f1_score(y_test, y_pred > 0.5, average="micro")
 
-This gives accuracy of 83.4%, which did not increase the model accuracy.
-
-## Neural Network with word vectorirez
-
-Data set has 90 labels and 7769 training entries so it might be
-difficult to increase the accuracy much more for all the labels 
-due to the relatively low training data volume, especially considering half of all
-the data has only `['earn']` category label which leaves 4929 
-documents for all other 89 labels to train on.
-``` sum(df.loc[df['type']=='training', 'categories'].apply(lambda x: x== ['earn'])) == 2840```
-
-One way to build a better model would be to use word embeddings, using a pre-trained
-word vectorizer. It also intrinsically accounts for word similarities and 
-using embeddinglayer it will account for word sequences unlike bag of words.
-
-To minimize pre-processing (no lemmatization, no lowercasing) let's use
-Gigaword 5th Edition (w/o lemmatization) from http://vectors.nlpl.eu/repository/.
+print("Linear score", score_lin)  # 82.5%
+print("NN basic score", bestscore_basic)  # 87%
+print("NN heavy pre-processing score", bestscore_)  # best 85.2%
 
 ```
-model = keras.Sequential()
-model.add(kn.Embedding(vocab_size, 300, weights=[embedding_matrix], input_length=mdn, trainable=False))
-***
-model.add(kn.Dense(y_train.shape[1], activation="sigmoid"))
-model.compile(loss="binary_crossentropy", optimizer="adam", metrics=["accuracy"])
-print(model.summary())
+
+This gives accuracy of 85.2%, which did not increase the basic model accuracy and even reduced it. 
+This was most likely the result of over-pre-procesing. Neural networks often work best with as
+little pre-processing as possible as they can figure out that internally.
+
+## Embedding Neural Network
+
+Pre-trained embedding: The data set might too small to create a relevant embedding layer
+especially considering almost half of all the data has only `['earn']` category. So I 
+also tried using English CoNLL17 corpus from http://vectors.nlpl.eu/repository/
+
+```python
+inp = kn.Input(shape=(mdn,), dtype='int32')
+x = kn.Embedding(vocab_size, 100, weights=[embedding_matrix], input_length=mdn, trainable=False)(inp)
+x = kn.Conv1D(100, 5, activation='relu')(x)
+x = kn.MaxPooling1D(5)(x)
+x = kn.Dropout(0.2)(x)
+x = kn.Conv1D(100, 5, activation='relu')(x)
+x = kn.MaxPooling1D(22)(x)
+x = kn.Dropout(0.2)(x)
+x = kn.Flatten()(x)
+x = kn.Dense(128, activation='relu')(x)
+x = kn.Dropout(0.05)(x)
+preds = kn.Dense(90, activation='sigmoid')(x)
+
+model = keras.Model(inp, preds)
+model.compile(loss='binary_crossentropy',
+              optimizer='rmsprop',
+              metrics=['accuracy', keras.metrics.FalseNegatives(), keras.metrics.FalsePositives()])
+model.summary()
+
+X_train, X_test, y_train, y_test = get_data_splits(padded_seq, y)
+X_tr, X_valid, y_tr, y_valid = train_test_split(X_train, y_train, train_size=0.85)
+
+history = model.fit(X_train, y_train, validation_data=(X_valid, y_valid), epochs=5, batch_size=100,
+          class_weight=[1/i+0.5 for i in np.sum(y_train, axis=0).tolist()[0]])
+y_pred = model.predict(X_test)
+bestscore_embed = f1_score(y_test, y_pred > 0.5, average="micro")
 ```
 
-*** = Tried middle layer combinations:
-Either 1) or 2):
-1) `model.add(kn.Flatten())`
-2) `model.add(kn.GlobalAveragePooling1D())`
-* Optional: `model.add(kn.Dense(300, activation="relu"))` - did not affect model.
+This gave accuracy of 80% which is a downgrade from a basic model. It might increase with 
+a better network architecture, but it might as well not. The over complicated embedding with
+deep neural network approach turns out to not be necessary for this data.
 
-None of the combinations worked out and all returns lower that linear model accuracy,
-so it might not be worth further using this stragegy. No model went above 71%.
+______
 
-Upon review, it turns out the pre-trained vectorizer might not be fit for this
-data set because half of all the unique words in it were not transformed using the
-vectorizer. 
+### Bonus: Different Artificial Neural Network approaches
 
-`len(embedding_matrix) == 25320`
-`sum([sum(i) == 0 for i in embedding_matrix]) == 10677`
-
-Future works:
-* Pre-process text to fit the pre-trained count vectorizer better.
-* Train personalized word vectorizer.
-* Try other architectures.
-* Tune hyper parameters.
+Embedding: There are other neural network approaches and architectures tried in 
+`nn_dense() @ discarded.py` but none
+ of them worked out and all returns lower that linear model accuracy,
+so it might not be worth further using this stragegy. Pretty much all models were in the 60% - 75% range.
+Considering embedding approach takes much longer to train (on a non-gpu system) and the initial 
+testing gave up to 70% accuracy. 
